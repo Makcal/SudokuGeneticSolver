@@ -2,6 +2,9 @@ build/
 cmake-build-debug/
 out/
 
+input.txt
+output.txt
+
 venv_stat/
 .idea/
 *.iml
