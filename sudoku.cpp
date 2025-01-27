@@ -3,10 +3,9 @@
 #include <climits>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iostream>
-#include <new>
-#include <optional>
 #include <ostream>
 #include <random>
 #include <type_traits>
@@ -25,24 +24,26 @@ class StackHeapPtr;
 
 template <typename T, std::size_t N>
     requires(N > 0)
-class StackHeap { // NOLINT(*-pro-type-member-init)
+class StackHeap { // NOLINT(*-member-init)
   private:
-    using BitMapElement = unsigned long long;
+    using BitMapElement = std::uint64_t;
 
     friend StackHeapPtr<T, N>;
 
-    std::array<T, N> array;
-    constexpr static std::size_t step = CHAR_BIT * sizeof(BitMapElement);
-    std::array<BitMapElement, (N - 1) / step + 1> bitmap{};
+    constexpr static std::size_t bitmap_cell_size = CHAR_BIT * sizeof(BitMapElement);
+    constexpr static std::size_t bitmap_size = ((N - 1) / bitmap_cell_size) + 1; // ceil(N / bitmap_cell_size)
+
+    std::array<T, bitmap_size * bitmap_cell_size> array;
+    std::array<BitMapElement, bitmap_size> bitmap{};
 
   public:
     template <typename... Args>
-    StackHeapPtr<T, N> create(Args &&...args) {
+    StackHeapPtr<T, N> create(Args&&... args) {
         for (std::size_t i = 0; i < bitmap.size(); ++i) {
             auto elem = bitmap[i];
             if (~elem) {
                 // first zero bit
-                BitMapElement bit = ~elem & elem + 1;
+                BitMapElement bit = ~elem & (elem + 1);
                 bitmap[i] |= bit;
                 std::size_t pos = CHAR_BIT * sizeof(BitMapElement) * i + bin_log(bit);
                 new (&array[pos]) T(std::forward<Args>(args)...);
@@ -54,21 +55,31 @@ class StackHeap { // NOLINT(*-pro-type-member-init)
 
   private:
     void free(std::size_t i) {
-        bitmap[i / step] &= ~(static_cast<BitMapElement>(1) << (i % step));
+        bitmap[i / bitmap_cell_size] &= ~(static_cast<BitMapElement>(1) << (i % bitmap_cell_size));
         array[i].~T();
     }
 
+    template <std::size_t Size>
+        requires(Size > 0)
+    consteval static auto generate_log_table_256() {
+        std::array<char, Size> table; // NOLINT(*-member-init)
+        table[0] = -1;
+        for (std::size_t i = 1, value = 0, count = 1; i < Size; count *= 2, value++) {
+            for (std::size_t j = 0; j < count && i < Size; j++) {
+                table[i++] = value;
+            }
+        }
+        return table;
+    }
+
     constexpr static unsigned char bin_log(BitMapElement bit) {
+        // NOLINTBEGIN
         // Reference: https://graphics.stanford.edu/~seander/bithacks.html#IntegerLogObvious
-        constexpr static char log_table_256[256] = {
-#define LT(n) n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n
-            -1,    0,     1,     1,     2,     2,     2,     2,     3,     3,     3,     3,     3,     3,     3,    3,
-            LT(4), LT(5), LT(5), LT(6), LT(6), LT(6), LT(6), LT(7), LT(7), LT(7), LT(7), LT(7), LT(7), LT(7), LT(7)};
-#undef LT
+        constexpr static std::array<char, 256> log_table_256 = generate_log_table_256<256>();
         unsigned char r = 0; // r will be lg(v)
         unsigned int t;      // temporary
 
-        BitMapElement shift = step / 2;
+        BitMapElement shift = bitmap_cell_size / 2;
         while (true) {
             if (shift == 8)
                 return r + (((t = bit >> 8)) ? 8 + log_table_256[t] : log_table_256[bit]);
@@ -78,6 +89,7 @@ class StackHeap { // NOLINT(*-pro-type-member-init)
             }
             shift /= 2;
         }
+        // NOLINTEND
     }
 };
 
@@ -91,22 +103,26 @@ class StackHeapPtr {
     std::reference_wrapper<Heap> heap;
     std::size_t i;
 
-    StackHeapPtr(Heap &heap, std::size_t i) : heap{heap}, i{i} {}
+    StackHeapPtr(Heap& heap, std::size_t i) : heap{heap}, i{i} {}
 
   public:
-    StackHeapPtr(const StackHeapPtr &other) = default;
+    ~StackHeapPtr() = default;
 
-    StackHeapPtr &operator=(const StackHeapPtr &other) = default;
+    StackHeapPtr(const StackHeapPtr& other) = default;
+    StackHeapPtr(StackHeapPtr&& other) = default;
 
-    bool operator==(const StackHeapPtr &other) const {
+    StackHeapPtr& operator=(const StackHeapPtr& other) = default;
+    StackHeapPtr& operator=(StackHeapPtr&& other) = default;
+
+    bool operator==(const StackHeapPtr& other) const {
         return &other.heap.get() == &heap.get() && i == other.i;
     }
 
-    T &operator*() const {
+    T& operator*() const {
         return heap.get().array[i];
     }
 
-    T *operator->() const {
+    T* operator->() const {
         return &this->operator*();
     }
 
@@ -118,7 +134,7 @@ class StackHeapPtr {
 
 template <typename T, std::size_t N>
 struct std::hash<detail::StackHeapPtr<T, N>> { // NOLINT(*-dcl58-cpp)
-    std::size_t operator()(const detail::StackHeapPtr<T, N> &ptr) const {
+    std::size_t operator()(const detail::StackHeapPtr<T, N>& ptr) const {
         return std::hash<std::size_t>{}(ptr.i);
     }
 };
@@ -147,7 +163,7 @@ struct Individual {
         locked_digits_by_subgrids;
 
   public:
-    static void set_initial_data(const Field &initial_field) {
+    static void set_initial_data(const Field& initial_field) {
         Individual::initial_field = initial_field;
 
         // Init structures
@@ -169,7 +185,8 @@ struct Individual {
                 digit--;
                 digit_counter[i][digit] = true;
                 locked_digits_by_columns[j][digit] = true;
-                locked_digits_by_subgrids[(i / SUDOKU_SIZE_ROOT) * SUDOKU_SIZE_ROOT + (j / SUDOKU_SIZE_ROOT)][digit] = true;
+                locked_digits_by_subgrids[((i / SUDOKU_SIZE_ROOT) * SUDOKU_SIZE_ROOT) + (j / SUDOKU_SIZE_ROOT)][digit] =
+                    true;
             }
         }
 
@@ -177,8 +194,9 @@ struct Individual {
         for (std::size_t i = 0; i < SUDOKU_SIZE; ++i) {
             int n = 0;
             for (digit_t digit = 0; digit < SUDOKU_SIZE; ++digit) {
-                if (digit_counter[i][digit])
+                if (digit_counter[i][digit]) {
                     continue;
+                }
                 available_digits_by_rows[i][n++] = digit;
             }
         }
@@ -190,36 +208,41 @@ struct Individual {
     // Invariant: rows are correct
     template <class URBG>
         requires std::uniform_random_bit_generator<std::remove_cvref_t<URBG>>
-    explicit Individual(URBG &&randomizer) { // NOLINT(*-pro-type-member-init)
+    explicit Individual(URBG&& randomizer) { // NOLINT(*-member-init)
         for (std::size_t i = 0; i < SUDOKU_SIZE; ++i) {
             std::shuffle(available_digits_by_rows[i].begin(),
                          available_digits_by_rows[i].begin() + free_position_count_by_rows[i],
-                         randomizer);
-            for (std::size_t j = 0; j < free_position_count_by_rows[i]; ++j)
+                         std::forward<URBG>(randomizer));
+            for (std::size_t j = 0; j < free_position_count_by_rows[i]; ++j) {
                 field[i][free_positions_by_rows[i][j]] = available_digits_by_rows[i][j] + 1;
+            }
         }
     }
 
     [[nodiscard]] fitness_t fitness() const {
         fitness_t error = 0;
 
-        std::array<std::array<unsigned int, SUDOKU_SIZE>, SUDOKU_SIZE> digits_by_columns{}, digits_by_subgrids{};
+        Field digits_by_columns{};
+        Field digits_by_subgrids{};
         for (std::size_t i = 0; i < SUDOKU_SIZE; ++i) {
             for (std::size_t j = 0; j < SUDOKU_SIZE; ++j) {
-                if (initial_field[i][j] != 0)
+                if (initial_field[i][j] != 0) {
                     continue;
+                }
                 const auto digit = field[i][j] - 1;
                 digits_by_columns[j][digit]++;
-                digits_by_subgrids[(i / SUDOKU_SIZE_ROOT) * SUDOKU_SIZE_ROOT + (j / SUDOKU_SIZE_ROOT)][digit]++;
+                digits_by_subgrids[((i / SUDOKU_SIZE_ROOT) * SUDOKU_SIZE_ROOT) + (j / SUDOKU_SIZE_ROOT)][digit]++;
             }
         }
 
         for (std::size_t i = 0; i < SUDOKU_SIZE; ++i) {
             for (digit_t digit = 0; digit < SUDOKU_SIZE; ++digit) {
-                error +=
-                    std::max(0, static_cast<int>(digits_by_columns[i][digit]) + locked_digits_by_columns[i][digit] - 1);
-                error += std::max(
-                    0, static_cast<int>(digits_by_subgrids[i][digit]) + locked_digits_by_subgrids[i][digit] - 1);
+                error += std::max(0,
+                                  static_cast<int>(digits_by_columns[i][digit]) +
+                                      static_cast<int>(locked_digits_by_columns[i][digit]) - 1);
+                error += std::max(0,
+                                  static_cast<int>(digits_by_subgrids[i][digit]) +
+                                      static_cast<int>(locked_digits_by_subgrids[i][digit]) - 1);
             }
         }
 
@@ -228,37 +251,39 @@ struct Individual {
 
     template <class URBG>
         requires std::uniform_random_bit_generator<std::remove_cvref_t<URBG>>
-    void mutate(URBG &&randomizer) {
+    void mutate(URBG&& randomizer) {
         // Choose a row
         std::uniform_int_distribution<std::size_t> row_choice{0, SUDOKU_SIZE - 1};
-        std::size_t row;
+        std::size_t row; // NOLINT(*-init-variables)
         do {
-            row = row_choice(randomizer);
+            row = row_choice(std::forward<URBG>(randomizer));
         } while (free_position_count_by_rows[row] <= 1);
 
         // Generate two distinct indices for choosing cells in the row to swap
         std::uniform_int_distribution<std::size_t> cell_choice{0, free_position_count_by_rows[row] - 1};
-        auto i = cell_choice(randomizer);
-        auto j = cell_choice(randomizer, decltype(cell_choice)::param_type{0, free_position_count_by_rows[row] - 2});
-        if (j >= i)
+        auto i = cell_choice(std::forward<URBG>(randomizer));
+        auto j = cell_choice(std::forward<URBG>(randomizer),
+                             decltype(cell_choice)::param_type{0, free_position_count_by_rows[row] - 2});
+        if (j >= i) {
             ++j;
+        }
 
         std::swap(field[row][free_positions_by_rows[row][i]], field[row][free_positions_by_rows[row][j]]);
     }
 
     template <std::size_t population_size, class URBG>
         requires std::uniform_random_bit_generator<std::remove_cvref_t<URBG>>
-    static auto makeChild(const Individual &mother,
-                          const Individual &father,
-                          detail::StackHeap<IndividualData, population_size> &heap,
-                          URBG &&randomizer) {
+    static auto makeChild(const Individual& mother,
+                          const Individual& father,
+                          detail::StackHeap<IndividualData, population_size>& heap,
+                          URBG&& randomizer) {
         const auto child = heap.create();
         child->fitness = -1;
-        Field &field = child->individual.field;
+        Field& field = child->individual.field;
         std::uniform_int_distribution coin{0, 1};
 
         for (int i = 0; i < SUDOKU_SIZE; ++i) {
-            field[i] = coin(randomizer) ? mother.field[i] : father.field[i];
+            field[i] = coin(std::forward<URBG>(randomizer)) ? mother.field[i] : father.field[i];
         }
         return child;
     }
@@ -271,11 +296,9 @@ struct IndividualData {
     IndividualData() = default;
 
     template <typename... Args>
-    IndividualData(fitness_t fitness, Args &&...args) : individual{std::forward<Args>(args)...}, fitness{fitness} {}
+    explicit IndividualData(fitness_t fitness, Args&&... args)
+        : individual{std::forward<Args>(args)...}, fitness{fitness} {}
 };
-
-const auto seed = std::random_device{}();
-std::mt19937 randomizer{seed};
 
 template <std::size_t population_size>
 class Solver {
@@ -283,11 +306,14 @@ class Solver {
     using IndividualPtr = detail::StackHeapPtr<IndividualData, population_size>;
     using Population = std::array<IndividualPtr, population_size>;
 
-    const unsigned int iteration_count;
+    std::size_t iteration_count;
     std::bernoulli_distribution mutation_decider;
 
+    unsigned int seed;
+    std::mt19937 randomizer{seed};
+
     static auto getCachingComparator() {
-        return [](const IndividualPtr &a, const IndividualPtr &b) {
+        return [](const IndividualPtr& a, const IndividualPtr& b) {
             const fitness_t fitness_a = a->fitness != -1 ? a->fitness : (a->fitness = a->individual.fitness());
             const fitness_t fitness_b = b->fitness != -1 ? b->fitness : (b->fitness = b->individual.fitness());
             return fitness_a < fitness_b;
@@ -295,8 +321,10 @@ class Solver {
     }
 
   public:
-    Solver(const unsigned int iteration_count, const double mutation_probability)
-        : iteration_count{iteration_count}, mutation_decider{mutation_probability} {}
+    Solver(const std::size_t iteration_count,
+           const double mutation_probability,
+           const unsigned int seed = std::random_device{}())
+        : iteration_count{iteration_count}, mutation_decider{mutation_probability}, seed{seed} {}
 
     std::optional<Field> solve() {
         IndividualHeap heap;
@@ -321,16 +349,16 @@ class Solver {
 
   private:
     template <std::size_t... Indices>
-    static std::array<IndividualPtr, sizeof...(Indices)> getInitialPopulation(IndividualHeap &heap,
-                                                                              std::index_sequence<Indices...>) {
+    std::array<IndividualPtr, sizeof...(Indices)> getInitialPopulation(IndividualHeap& heap,
+                                                                       std::index_sequence<Indices...> /*unused*/) {
         return {(static_cast<void>(Indices), heap.create(-1, randomizer))...};
     }
 
-    Population getInitialPopulation(IndividualHeap &heap) {
+    Population getInitialPopulation(IndividualHeap& heap) {
         return getInitialPopulation(heap, std::make_index_sequence<population_size>{});
     }
 
-    void crossover(Population &population, IndividualHeap &heap) {
+    void crossover(Population& population, IndividualHeap& heap) {
         const auto child_count = static_cast<std::size_t>(0.5L * population_size);
         std::uniform_int_distribution<std::size_t> selector{0, population.size() - 1 - child_count};
 
@@ -354,24 +382,33 @@ int main() {
     std::cin.tie(nullptr);
     std::cout.tie(nullptr);
 
+    {
 #ifdef FILE_INPUT
-    std::freopen("input.txt", "r", stdin);
+        FILE* input_file = std::freopen("input.txt", "r", stdin);
+        if (!input_file) {
+            return 1;
+        }
 #endif
 #ifdef FILE_OUTPUT
-    std::freopen("output.txt", "w", stdout);
+        FILE* output_file = std::freopen("output.txt", "w", stdout);
+        if (!output_file) {
+            return 1;
+        }
 #endif
+    }
 
 #ifdef DEBUG
     std::cout << GeneticSudoku::seed << std::endl;
 #endif
     GeneticSudoku::Field input_field;
-    for (auto &row : input_field) {
-        for (auto &cell : row) {
+    for (auto& row : input_field) {
+        for (auto& cell : row) {
             std::cin >> cell;
-            if (cell == '-')
+            if (cell == '-') {
                 cell = 0;
-            else
+            } else {
                 cell -= '0';
+            }
         }
     }
 
@@ -383,12 +420,14 @@ int main() {
     }
 
     for (std::size_t i = 0; i < GeneticSudoku::SUDOKU_SIZE; ++i) {
-        if (i > 0)
+        if (i > 0) {
             std::cout << '\n';
+        }
         for (std::size_t j = 0; j < GeneticSudoku::SUDOKU_SIZE; ++j) {
-            const auto &answer_field = input_field[i][j] == 0 ? solution.value() : input_field;
-            if (j > 0)
+            const auto& answer_field = input_field[i][j] == 0 ? solution.value() : input_field;
+            if (j > 0) {
                 std::cout << ' ';
+            }
             std::cout << static_cast<char>(answer_field[i][j] + '0');
         }
     }
